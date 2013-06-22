@@ -10,7 +10,8 @@ var restify = require("restify"),
 	mongo   = require("mongoskin"),
 	fs      = require("fs"),
 	path    = require("path"),
-	_		= require("underscore");
+	_		= require("underscore"),
+	url     = require("url");
 
 var host = "linux8.cs.nctu.edu.tw",
     port = 9999,
@@ -91,7 +92,7 @@ function serviceHandler(req, res, next) {
 		if(service != null) {
 			try {
 				var module = require(service.name);
-				module.init({});
+				module.init({prefix:'/service/'+req.params[0]});
 			} catch(e) {
 				return next(e);
 			}
@@ -100,11 +101,12 @@ function serviceHandler(req, res, next) {
 				                + '<http://' + host + ((port != 80) ? ':'+ port : '') + '/' + service.uri + '/policy>; rel="policy"; type="application/vnd.service-policy+json"; schema="' + service.policy_schema + '"');
 
 			var _req = _.clone(req);
-			_req.url = "/" + req.params[1];
-
-			if( ! module.route(_req, res)) {
+			var query = url.parse(req.url);
+			_req.url = query.path;
+			console.log(_req.url);
+			if( module.route(_req, res)) {
 				console.log("service routing failed");
-				res.send(404);
+		//		res.send(404);
 				return next(false);
 			} else {
 				console.log("service '" + req.url + "' served");
@@ -154,6 +156,25 @@ server.get(/^\/mashup\/([a-zA-Z0-9_\.~-]+)|([a-zA-Z0-9_\.~-]+)\?(.*)/, function(
 			res.send(404);
 			return next(false);
 		}
+	});
+});
+
+// -- Utlity Functions
+// --------------------------------------------------------
+
+server.get(/^\/utility_function\/([a-zA-Z0-9_\.~-]+)\/([a-zA-Z0-9_\.~-]+)/, function(req, res, next) {
+	var key = req.params[0] + '/' + req.params[1];
+	db.collection("utility_function").findOne({url: key}, function(err, func) {
+		if(err) {
+			return next(err);
+		} else if(func == null){
+			res.send(404); return next(false);
+		}
+
+		res.cache({maxAge: 60});
+		res.send(200, func.func);
+		console.log("Utility Function [" + key + "] served");
+		return next(false);
 	});
 });
 
