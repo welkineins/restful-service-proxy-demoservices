@@ -11,10 +11,12 @@ var restify = require("restify"),
 	fs      = require("fs"),
 	path    = require("path"),
 	_		= require("underscore"),
-	url     = require("url");
+	url     = require("url"),
+	os      = require("os");
 
-var host = "linux8.cs.nctu.edu.tw",
-    port = 9999,
+var host = os.hostname() + ".cs.nctu.edu.tw",
+    port = process.argv[2] || 9999,
+    noDelay = (process.argv[3] && true) || false,
     module_path = "./public/modules/",
     policy_path = "./public/policies/",
     db_path = "localhost:27017/test?auto_reconnect&w=1";
@@ -22,7 +24,70 @@ var host = "linux8.cs.nctu.edu.tw",
 var db     = mongo.db(db_path),
 	server = restify.createServer();
 
+// Secuirty
+// ----------------------------------------------------
+server.use(function(req, res, next) {
+	// Security check                           
+	var ips = [
+		"140.113.216.105",                      
+		"140.113.235.158",
+		"140.113.235.157",                      
+		"127.0.0.1",
+	];                                          
+
+	ips.forEach(function(ip){                   
+		if(req.connection.remoteAddress == ip) {
+			next();                             
+			return false;
+		}                                       
+	});
+});
+
+// -- Parse Body
+// --------------------------------------------------------
 server.use(restify.bodyParser({mapParams: false}));
+
+// -- Add delay
+//-----------------------------------------------------
+if( ! noDelay) {
+	server.use(function(req, res, next) {
+		setTimeout(function() {
+			next();
+	    }, 200);
+	});
+}
+
+// -- Mashup Service
+// ---------------------------------------------------------
+server.get(/^\/mashup\/([a-zA-Z0-9_\.~-]+)|([a-zA-Z0-9_\.~-]+)\?(.*)/, function(req, res, next) {
+    db.collection("mashup").findOne({uri: req.params[0]}, function(err, service) {
+        if(err) {
+            return next(err);
+        }
+
+        if(service != null) {
+            res.setHeader("Link", '<' + service.service_url + '>; rel="service"; method="' + service.method + '"; type="' + service.type + '"');
+            if(service.next) {
+                res.setHeader("Link", res.getHeader("Link") + ',<' + service.next + '>; rel="next"');
+            }
+            if(service.engine) {
+                res.setHeader("Link", res.getHeader("Link") + ',<' + service.engine + '>; rel="engine"');
+            }
+            res.setHeader('Content-Type', 'application/javascript');
+            res.writeHeader(200);
+            res.write(service.transform.uri);
+            res.write(service.transform.request);
+            res.write(service.transform.response);
+            res.end();
+            console.log("[OK] meta service [" + req.params[0] + "] served");
+            return next();
+        } else {
+            console.log("[Error] meta service not found: " + req.params[0]);
+            res.send(404);
+            return next(false);
+        }
+    });
+});
 
 // -- Module
 // --------------------------------------------------------
@@ -41,7 +106,7 @@ function moduleHandler(req, res, next) {
 						res.writeHead(200);
 						fstream.pipe(res);
 						fstream.once("end", function () {
-							console.log("module '" + req.url + "' downloaded");
+							console.log("[OK] module '" + req.url + "' downloaded");
 							return next(false);
 						});
 					});
@@ -69,7 +134,7 @@ function policyHandler(req, res, next) {
 			res.writeHead(200);
 			res.write(body);
 			res.end();
-			console.log("policy '" + req.url + "' downloaded");
+			console.log("[OK] policy '" + req.url + "' downloaded");
 			return next(false);
 		} else {
 			return next(err);
@@ -82,7 +147,6 @@ server.get(/^\/service\/([a-zA-Z0-9_\.~-]+)\/policy/, policyHandler);
 // -- Service
 // --------------------------------------------------------
 function serviceHandler(req, res, next) {
-	console.log("new request: " + req.params[0]);
 	db.collection("services").findOne({uri: ("service/" + req.params[0])}, function(err, service) {
 		if(err) {
 			 console.log("query failed: " + err);
@@ -92,28 +156,24 @@ function serviceHandler(req, res, next) {
 		if(service != null) {
 			try {
 				var module = require(service.name);
-				module.init({prefix:'/service/'+req.params[0]});
+				module.init({
+					prefix: "/service/" + req.params[0],
+					runtime: "server",
+				});
 			} catch(e) {
 				return next(e);
 			}
 			
 			res.setHeader("Link", '<http://' + host + ((port != 80) ? ':'+ port : '') + '/' + service.uri + '/module>; rel="module"; type="application/vnd.service-module"; runtime="' + service.module_runtime + '",'
 				                + '<http://' + host + ((port != 80) ? ':'+ port : '') + '/' + service.uri + '/policy>; rel="policy"; type="application/vnd.service-policy+json"; schema="' + service.policy_schema + '"');
-
 			var _req = _.clone(req);
 			var query = url.parse(req.url);
 			_req.url = query.path;
-			console.log(_req.url);
-			if( module.route(_req, res)) {
-				console.log("service routing failed");
-		//		res.send(404);
-				return next(false);
-			} else {
-				console.log("service '" + req.url + "' served");
-				return next(false);
-			}
+			res.setHeader("X-Count", "0");
+			module.route(_req, res, next);
+			console.log("[OK] Service '" + req.url + "' served");
 		} else {
-			console.log("service not found: service/" + req.params[0]);
+			console.log("[Error] Service not found: service/" + req.params[0]);
 			res.send(404);
 			return next(false);
 		}
@@ -125,39 +185,6 @@ server.head(/^\/service\/([a-zA-Z0-9_\.~-]+)\/(.*)/, serviceHandler);
 server.post(/^\/service\/([a-zA-Z0-9_\.~-]+)\/(.*)/, serviceHandler);
 server.put(/^\/service\/([a-zA-Z0-9_\.~-]+)\/(.*)/, serviceHandler);
 server.del(/^\/service\/([a-zA-Z0-9_\.~-]+)\/(.*)/, serviceHandler);
-
-// -- Mashup Service
-// ---------------------------------------------------------
-
-server.get(/^\/mashup\/([a-zA-Z0-9_\.~-]+)|([a-zA-Z0-9_\.~-]+)\?(.*)/, function(req, res, next) {
-	db.collection("mashup").findOne({uri: req.params[0]}, function(err, service) {
-		if(err) {
-			return next(err);
-		}
-
-		if(service != null) {
-			res.setHeader("Link", '<' + service.service_url + '>; rel="service"; method="' + service.method + '"; type="' + service.type + '"');
-			if(service.next) {
-				res.setHeader("Link", res.getHeader("Link") + ',<' + service.next + '>; rel="next"');
-			}
-			if(service.engine) {
-				res.setHeader("Link", res.getHeader("Link") + ',<' + service.engine + '>; rel="engine"');
-			}
-			res.setHeader('Content-Type', 'application/javascript');
-			res.writeHeader(200);
-			res.write(service.transform.uri);
-			res.write(service.transform.request);
-			res.write(service.transform.response);
-			res.end();
-			console.log("meta service [" + req.params[0] + "] served");
-			return next();
-		} else {
-			console.log("meta service not found: " + req.params[0]);
-			res.send(404);
-			return next(false);
-		}
-	});
-});
 
 // -- Utlity Functions
 // --------------------------------------------------------
@@ -173,13 +200,13 @@ server.get(/^\/utility_function\/([a-zA-Z0-9_\.~-]+)\/([a-zA-Z0-9_\.~-]+)/, func
 
 		res.cache({maxAge: 60});
 		res.send(200, func.func);
-		console.log("Utility Function [" + key + "] served");
+		console.log("[OK] Utility Function [" + key + "] served");
 		return next(false);
 	});
 });
 
 // Start Listening
 server.listen(port, function() {
-	console.log("App server is running on port: " + port);
+	console.log("App server is running on host: " + host + ", port: " + port);
 });
 
