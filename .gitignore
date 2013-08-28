@@ -1,6 +1,9 @@
 *.swp
 *~
-node_modules/
-public/
-db_server_side/
-db_proxy_side/
+/node_modules/*
+!/node_modules/face/
+!/node_modules/mashup/
+!/node_modules/virus/
+/public/
+/db_server_side/
+/db_proxy_side/
